@@ -37,6 +37,9 @@ class Trajectory(object):
             s.display()
             print 'Action:', ACTIONS[a]
 
+    def __str__(self):
+        return 'Trajectory(l=%d)' % len(self.actions)
+
 
 class OOState(object):
     def __init__(self, obj_list):
@@ -50,9 +53,22 @@ class OOState(object):
             obj.draw(canvas)
         canvas.display()
 
-    def to_dense(self):
-        """Return a dense matrix/vector-based representation of this state"""
+    def to_dense(self, include_room=False):
+        """
+        Return a dense matrix representation of this state
 
+        Args:
+            include_room (bool): If true, includes the room & door channels
+    
+        Returns:
+            An (C, N, N) numpy array, where C = num channels, N=size of environment
+            The channels are:
+                Room: 1 channel for each room color.
+                      1's indicating the area of the room, 0 elsewhere.
+                Door: 1 where there are doors, 0 elsewhere
+                Block: A 1 where the block is, 0 elsewhere
+                Agent: A 1 on the tile of the agent, 0 elsewhere
+        """
         def create_channels(n=1):
             ch = np.array(np.zeros(self.env_dim), dtype=np.float)
             ch = np.expand_dims(ch, axis=0)
@@ -81,8 +97,12 @@ class OOState(object):
                 for i in range(box.left, box.right+1):
                     for j in range(box.bottom, box.top+1):
                         door_channel[0, i, j] = 1.0
+
         # Concatenate all channels together
-        all_channels = np.r_[room_channel, door_channel, block_channel, agent_channel]
+        if include_room:
+            all_channels = np.r_[room_channel, door_channel, block_channel, agent_channel]
+        else:
+            all_channels = np.r_[block_channel, agent_channel]
         return all_channels
 
     def __str__(self):
@@ -152,7 +172,7 @@ def parse_file(fname):
                 actions = line.strip().split(',')
             else:
                 states.append(parse_state(line.strip()))
-        actions = [ACTION_TO_INDEX[a] for a in actions]
+        #actions = [ACTION_TO_INDEX[a] for a in actions]
     return Trajectory(states, actions, sentence=sentence)
 
 def parse_state(line):
@@ -192,13 +212,9 @@ def parse_agent(params):
     pos = Position(x, y)
     return MDPObj('agent', {'pos': pos})
 
+
 OBJ_PARSERS = {'room': parse_room, 'door': parse_door,
                'block': parse_block, 'agent': parse_agent}
-
-
-def load_turk_train():
-    for traj in load_dataset('allTurkTrain'):
-        yield traj
 
 
 def load_dataset(name):
@@ -206,6 +222,16 @@ def load_dataset(name):
     dirname = os.path.join(DATA_DIR, name)
     for i, fname in enumerate(os.listdir(dirname)):
         traj = parse_file(os.path.join(dirname, fname))
+        yield traj
+
+
+def load_turk_train():
+    for traj in load_dataset('allTurkTrain'):
+        yield traj
+
+
+def load_turk_train_limited():
+    for traj in load_dataset('allTurkTrainLimitedCommand'):
         yield traj
 
 
