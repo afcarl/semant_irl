@@ -11,6 +11,7 @@ from semantirl.data import load_turk_train_limited
 from semantirl.utils import Vocab, PAD, EOS, pad, one_hot, BatchSampler
 
 MAX_LEN = 20
+START = '_START'
 
 DataPoint = namedtuple('DataPoint', ['obs', 'acts', 'sentence'])
 
@@ -43,7 +44,8 @@ def load_data():
     # Pad actions
     acts = [traj.actions for traj in trajs]
     max_len = np.max([len(act) for act in acts])
-    acts = [pad(act, PAD, max_len) for act in acts]
+    acts = [[START]+pad(act, PAD, max_len) for act in acts]
+    max_len += 1
     avocab = Vocab()
     for act_seq in acts:
         for act in act_seq:
@@ -75,6 +77,9 @@ class Cmd2Act(object):
         self.obs = obs = tf.placeholder(tf.float32, [batch_size]+obs_shape)
         self.sentence = sentence = tf.placeholder(tf.int32, [batch_size, max_cmd])
         self.actions = actions = tf.placeholder(tf.int32, [batch_size, max_act])
+        action_labels = actions[:,1:]
+        assert_shape(action_labels, (batch_size, max_act-1))
+        actions = actions[:,:-1]
         self.lr = tf.placeholder(tf.float32, [])
 
         with tf.variable_scope('cmd2seq'):
@@ -84,7 +89,7 @@ class Cmd2Act(object):
 
             action_embedding_mat = tf.get_variable('AEmbed', (num_actions, embed_size))
             action_embeddings = tf.nn.embedding_lookup(action_embedding_mat, actions)
-            assert_shape(action_embeddings, (batch_size, max_act, embed_size))
+            assert_shape(action_embeddings, (batch_size, max_act-1, embed_size))
 
             # Project obs into dim_hidden (TODO: Use convnet)
             Wobs = tf.get_variable('Wobs', obs_shape+[dim_hidden])
@@ -111,11 +116,11 @@ class Cmd2Act(object):
             Wact = tf.get_variable('Wact', (dim_hidden, num_actions))
             bact = tf.get_variable('bact', (num_actions))
             act_output = tf.matmul(tf.reshape(dec_outputs, [-1, dim_hidden]), Wact)+bact
-            act_output = tf.nn.softmax(act_output)
-            act_output = tf.reshape(act_output, [max_act, batch_size, num_actions])
+            self.act_logits = tf.nn.softmax(act_output)
+            act_output = tf.reshape(act_output, [max_act-1, batch_size, num_actions])
             act_output = tf.transpose(act_output, [1,0,2])
 
-            loss = tf.nn.sparse_softmax_cross_entropy_with_logits(act_output, actions)
+            loss = tf.nn.sparse_softmax_cross_entropy_with_logits(act_output, action_labels)
             batch_loss = tf.reduce_mean(loss)
 
         self.batch_loss = batch_loss
@@ -129,6 +134,12 @@ class Cmd2Act(object):
     def run(self, fetches, feeds={}):
         return self.sess.run(fetches, feed_dict=feeds)
 
+    def _make_feed(self, batch):
+        obs_batch = np.r_[[datum[0] for datum in batch]]
+        act_batch = np.r_[[datum[1] for datum in batch]]
+        sent_batch = np.r_[[datum[2] for datum in batch]]
+        return {self.obs: obs_batch, self.sentence:sent_batch, self.actions:act_batch}
+
     def train_step(self, batch):
         """
         Run one step of gradient descent
@@ -139,26 +150,23 @@ class Cmd2Act(object):
         Returns:
             loss (float)
         """
-        obs_batch = np.r_[[datum[0] for datum in batch]]
-        act_batch = np.r_[[datum[1] for datum in batch]]
-        sent_batch = np.r_[[datum[2] for datum in batch]]
-        
-        loss, _ = self.run([self.batch_loss, self.train_op], feeds={
-                self.obs: obs_batch,
-                self.sentence: sent_batch,
-                self.actions: act_batch,
-                self.lr: 1e-3
-            })
+        feeds = self._make_feed(batch)
+        feeds[self.lr] = 1e-2
+        loss, _ = self.run([self.batch_loss, self.train_op], feeds=feeds)
         return loss
 
-    def train(self, dataset, heartbeat=500):
+    def train(self, dataset, heartbeat=1000):
         sampler = BatchSampler(dataset)
         for i, batch in enumerate(sampler.with_replacement(batch_size=self.batch_size)):
             if i%heartbeat == 0:
                 print i, self.train_step(batch)
 
+                feeds = self._make_feed(batch)
+                #print self.run(self.act_logits, feeds=feeds)
+
 
 def main():
+    np.set_printoptions(suppress=True)
     vocab, avocab, dataset, max_slen, max_alen, obs_shape = load_data()
 
     cmd = Cmd2Act(batch_size=5)
