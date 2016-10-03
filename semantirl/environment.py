@@ -144,18 +144,18 @@ class MDPObj(object):
             box = self.box
             for i in range(box.left, box.right+1):
                 for j in range(box.bottom, box.top+1):
-                    canvas.set(i,j,' ',self.color)
+                    canvas.set_back(i,j,self.color)
         elif self.type == MDPObj.DOOR:
             box = self.box
             for i in range(box.left, box.right+1):
                 for j in range(box.bottom, box.top+1):
-                    canvas.set(i,j,'D')
+                    canvas.set_fore(i,j,'D')
         elif self.type == MDPObj.BLOCK:
             pos = self.pos
-            canvas.set(pos.x, pos.y, 'B')
+            canvas.set_fore(pos.x, pos.y, 'B')
         elif self.type == MDPObj.AGENT:
             pos = self.pos
-            canvas.set(pos.x, pos.y, 'A')
+            canvas.set_fore(pos.x, pos.y, 'A')
 
     def __repr__(self):
         return '%s' % self.type

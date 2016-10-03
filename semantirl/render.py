@@ -8,11 +8,17 @@ Cell = namedtuple('Cell', ['text', 'back'])
 class Canvas(object):
     def __init__(self, shape):
         self.canvas = np.array(np.zeros(shape), dtype=np.object_)
-        self.canvas[:] = None
+        for idx, val in np.ndenumerate(self.canvas):
+            self.canvas[idx] = Cell(' ', None)
         self.shape = shape
 
-    def set(self, x, y, text, bcolor=None):
-        self.canvas[x,y] = Cell(text, bcolor)
+    def set_fore(self, x, y, text, bcolor=None):
+        old = self.canvas[x,y]
+        self.canvas[x,y] = Cell(text, old.back)
+
+    def set_back(self, x, y, bcolor):
+        old = self.canvas[x,y]
+        self.canvas[x,y] = Cell(old.text, bcolor)
 
     def display(self):
         canvas = np.fliplr(self.canvas).T
