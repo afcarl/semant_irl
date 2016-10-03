@@ -8,7 +8,7 @@ import numpy as np
 from collections import namedtuple
 
 from semantirl.data import load_turk_train_limited
-from semantirl.utils import Vocab, PAD, EOS, pad, one_hot
+from semantirl.utils import Vocab, PAD, EOS, pad, one_hot, BatchSampler
 
 MAX_LEN = 20
 
@@ -23,7 +23,7 @@ def load_data():
     trajs = [traj for traj in load_turk_train_limited()]
 
     # Prune trajectories with long sentences (only about 20)
-    trajs = [traj for traj in trajs if len(traj.sentence) <= MAX_LEN]
+    trajs = [traj for traj in trajs if len(traj.sentence) <= (MAX_LEN)]
     sents = [traj.sentence+[EOS] for traj in trajs]
 
     # Calculate max len & pad sentences
@@ -31,6 +31,7 @@ def load_data():
     for sent in sents:
         max_len = max(max_len, len(sent))
     sents = [pad(sent, PAD, max_len) for sent in sents]
+    max_sent = max_len
     
     # Build vocab
     vocab = Vocab()
@@ -56,65 +57,115 @@ def load_data():
                                  avocab.words2indices(acts[i]),
                                  vocab.words2indices(sents[i])))
 
-    return vocab, avocab, dataset, max_len, init_state.shape
+    return vocab, avocab, dataset, max_sent, max_len, init_state.shape
 
 
-def build_model(obs_shape, vocab, avocab, 
-        max_cmd=MAX_LEN, max_act=MAX_LEN, batch_size=1):
-    dim_hidden = 10
-    embed_size = 10
-    num_actions = len(avocab)
-    obs_shape = list(obs_shape)
+class Cmd2Act(object):
+    def __init__(self, batch_size=1):
+        self.batch_size = batch_size
 
-    obs = tf.placeholder(tf.float32, [batch_size]+obs_shape)
-    sentence = tf.placeholder(tf.int32, [batch_size, max_cmd])
-    actions = tf.placeholder(tf.int32, [batch_size, max_act])
+    def _build_model(self, obs_shape, vocab, avocab, 
+            max_cmd=MAX_LEN, max_act=MAX_LEN):
+        dim_hidden = 10
+        embed_size = 10
+        num_actions = len(avocab)
+        obs_shape = list(obs_shape)
+        batch_size = self.batch_size
 
-    with tf.variable_scope('cmd2seq'):
-        embedding_matrix = tf.get_variable('WEmbed', (len(vocab), embed_size))
-        word_embeddings = tf.nn.embedding_lookup(embedding_matrix, sentence)
-        assert_shape(word_embeddings, (batch_size, max_cmd, embed_size))
+        self.obs = obs = tf.placeholder(tf.float32, [batch_size]+obs_shape)
+        self.sentence = sentence = tf.placeholder(tf.int32, [batch_size, max_cmd])
+        self.actions = actions = tf.placeholder(tf.int32, [batch_size, max_act])
+        self.lr = tf.placeholder(tf.float32, [])
 
-        action_embedding_mat = tf.get_variable('AEmbed', (num_actions, embed_size))
-        action_embeddings = tf.nn.embedding_lookup(action_embedding_mat, actions)
-        assert_shape(action_embeddings, (batch_size, max_act, embed_size))
+        with tf.variable_scope('cmd2seq'):
+            embedding_matrix = tf.get_variable('WEmbed', (len(vocab), embed_size))
+            word_embeddings = tf.nn.embedding_lookup(embedding_matrix, sentence)
+            assert_shape(word_embeddings, (batch_size, max_cmd, embed_size))
 
-        # Project obs into dim_hidden (TODO: Use convnet)
-        Wobs = tf.get_variable('Wobs', obs_shape+[dim_hidden])
-        bobs = tf.get_variable('bobs', (dim_hidden,))
-        obs_proj = tf.matmul(obs, Wobs)+bobs
-        assert_shape(obs_proj, (batch_size, dim_hidden))
+            action_embedding_mat = tf.get_variable('AEmbed', (num_actions, embed_size))
+            action_embeddings = tf.nn.embedding_lookup(action_embedding_mat, actions)
+            assert_shape(action_embeddings, (batch_size, max_act, embed_size))
 
-        # Embed sentence via RNN
-        with tf.variable_scope('encoder'):
-            enc_cell = rnn_cell.BasicRNNCell(dim_hidden)
-            # unpack tensors
-            word_list = tf.unpack(word_embeddings, axis=1)
-            enc_outputs, last_state = rnn.rnn(enc_cell, word_list, initial_state=obs_proj)
-            assert_shape(last_state, (batch_size, dim_hidden))
+            # Project obs into dim_hidden (TODO: Use convnet)
+            Wobs = tf.get_variable('Wobs', obs_shape+[dim_hidden])
+            bobs = tf.get_variable('bobs', (dim_hidden,))
+            obs_proj = tf.matmul(obs, Wobs)+bobs
+            assert_shape(obs_proj, (batch_size, dim_hidden))
 
-        # Decode actions via RNN
-        with tf.variable_scope('decoder'):
-            dec_cell = rnn_cell.BasicRNNCell(dim_hidden)
-            action_list = tf.unpack(action_embeddings, axis=1)
-            #TODO: Offset actions by 1
-            dec_outputs, dec_state = rnn.rnn(dec_cell, action_list, initial_state=last_state)
+            # Embed sentence via RNN
+            with tf.variable_scope('encoder'):
+                enc_cell = rnn_cell.BasicRNNCell(dim_hidden)
+                # unpack tensors
+                word_list = tf.unpack(word_embeddings, axis=1)
+                enc_outputs, last_state = rnn.rnn(enc_cell, word_list, initial_state=obs_proj)
+                assert_shape(last_state, (batch_size, dim_hidden))
 
-        # Project outputs
-        Wact = tf.get_variable('Wact', (dim_hidden, num_actions))
-        bact = tf.get_variable('bact', (num_actions))
-        act_output = tf.matmul(tf.reshape(dec_outputs, [-1, dim_hidden]), Wact)+bact
-        act_output = tf.reshape(act_output, [max_act, batch_size, num_actions])
-        act_output = tf.transpose(act_output, [1,0,2])
+            # Decode actions via RNN
+            with tf.variable_scope('decoder'):
+                dec_cell = rnn_cell.BasicRNNCell(dim_hidden)
+                action_list = tf.unpack(action_embeddings, axis=1)
+                #TODO: Offset actions by 1
+                dec_outputs, dec_state = rnn.rnn(dec_cell, action_list, initial_state=last_state)
 
-        loss = tf.nn.sparse_softmax_cross_entropy_with_logits(act_output, actions)
-        batch_loss = tf.reduce_sum(loss)
+            # Project decoder outputs into actions
+            Wact = tf.get_variable('Wact', (dim_hidden, num_actions))
+            bact = tf.get_variable('bact', (num_actions))
+            act_output = tf.matmul(tf.reshape(dec_outputs, [-1, dim_hidden]), Wact)+bact
+            act_output = tf.nn.softmax(act_output)
+            act_output = tf.reshape(act_output, [max_act, batch_size, num_actions])
+            act_output = tf.transpose(act_output, [1,0,2])
+
+            loss = tf.nn.sparse_softmax_cross_entropy_with_logits(act_output, actions)
+            batch_loss = tf.reduce_mean(loss)
+
+        self.batch_loss = batch_loss
+        self.train_op = tf.train.AdamOptimizer(self.lr).minimize(batch_loss)
+
+    def _init_tf(self):
+        self.sess = tf.Session()
+        self.sess.run(tf.initialize_all_variables())
+        self.saver = tf.train.Saver()
+
+    def run(self, fetches, feeds={}):
+        return self.sess.run(fetches, feed_dict=feeds)
+
+    def train_step(self, batch):
+        """
+        Run one step of gradient descent
+
+        Args:
+            batch: A list of DataPoint objects
+
+        Returns:
+            loss (float)
+        """
+        obs_batch = np.r_[[datum[0] for datum in batch]]
+        act_batch = np.r_[[datum[1] for datum in batch]]
+        sent_batch = np.r_[[datum[2] for datum in batch]]
+        
+        loss, _ = self.run([self.batch_loss, self.train_op], feeds={
+                self.obs: obs_batch,
+                self.sentence: sent_batch,
+                self.actions: act_batch,
+                self.lr: 1e-3
+            })
+        return loss
+
+    def train(self, dataset, heartbeat=500):
+        sampler = BatchSampler(dataset)
+        for i, batch in enumerate(sampler.with_replacement(batch_size=self.batch_size)):
+            if i%heartbeat == 0:
+                print i, self.train_step(batch)
 
 
 def main():
-    vocab, avocab, dataset, max_alen, obs_shape = load_data()
+    vocab, avocab, dataset, max_slen, max_alen, obs_shape = load_data()
 
-    build_model(obs_shape, vocab, avocab, max_act=max_alen)
+    cmd = Cmd2Act(batch_size=5)
+    cmd._build_model(obs_shape, vocab, avocab, max_cmd=max_slen, max_act=max_alen)
+    cmd._init_tf()
+    cmd.train(dataset)
+
 
 if __name__ == "__main__":
     main()
