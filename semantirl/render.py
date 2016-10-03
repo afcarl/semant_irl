@@ -1,7 +1,7 @@
 import numpy as np
 from collections import namedtuple
 
-from colors import print_color
+from semantirl.utils.colors import print_color
 
 Cell = namedtuple('Cell', ['text', 'back'])
 

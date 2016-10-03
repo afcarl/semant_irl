@@ -2,7 +2,8 @@ import os
 from collections import namedtuple
 import numpy as np
 
-from render import Canvas
+from semantirl.render import Canvas
+from semantirl.utils.file_utils import DATA_DIR
 
 #COLOR = ['blue', 'green', 'magenta', 'red', 'yellow']
 COLOR = ["black", "blue", "cyan", "darkGray", "gray", "green", "lightGray", "magenta", "orange", "pink", "red", "white", "yellow"]
@@ -16,6 +17,9 @@ Position = namedtuple('Pos', ['x', 'y'])
 # Use a restricted color set
 COLOR_TO_CHANNEL = {col:channel for (channel, col) in enumerate(['red', 'green', 'blue'])}
 
+# Map actions to a discrete set of numbers
+ACTION_TO_INDEX = {act:idx for (idx, act) in enumerate(ACTIONS)}
+
 
 class Trajectory(object):
     """ Contains a list of states and actions """
@@ -27,9 +31,11 @@ class Trajectory(object):
     def pretty_print(self):
         if self.sentence:
             print 'Command:', ' '.join(self.sentence)
-        for (s, a) in zip(self.states, self.actions):
-            print s
-            print a
+        for i, (s, a) in enumerate(zip(self.states, self.actions)):
+            print '=='*10
+            print 'T=',i
+            s.display()
+            print 'Action:', ACTIONS[a]
 
 
 class OOState(object):
@@ -146,6 +152,7 @@ def parse_file(fname):
                 actions = line.strip().split(',')
             else:
                 states.append(parse_state(line.strip()))
+        actions = [ACTION_TO_INDEX[a] for a in actions]
     return Trajectory(states, actions, sentence=sentence)
 
 def parse_state(line):
@@ -188,22 +195,24 @@ def parse_agent(params):
 OBJ_PARSERS = {'room': parse_room, 'door': parse_door,
                'block': parse_block, 'agent': parse_agent}
 
-#============
-ROOT_DIR = os.path.dirname(os.path.dirname(__file__))
-HOME = os.environ['HOME']
-DATA_DIR = os.path.join(HOME, 'code/semantirl/data/allTurkTrain')
+
+def load_turk_train():
+    for traj in load_dataset('allTurkTrain'):
+        yield traj
+
+
+def load_dataset(name):
+    """ Return an iterator through Trajectory objects """
+    dirname = os.path.join(DATA_DIR, name)
+    for i, fname in enumerate(os.listdir(dirname)):
+        traj = parse_file(os.path.join(dirname, fname))
+        yield traj
+
 
 def main():
-    for i, fname in enumerate(os.listdir(DATA_DIR)):
-        traj = parse_file(os.path.join(DATA_DIR, fname))
-        print traj.sentence
-        for state, act in zip(traj.states, traj.actions):
-            canvas = state.display()
-            print state.to_dense()
-            print act
-            break
-        if i==0:
-            break
+    for traj in load_turk_train():
+        traj.pretty_print()
+        break
 
 if __name__ == "__main__":
     main()
