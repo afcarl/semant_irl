@@ -54,7 +54,9 @@ def load_data():
     # Construct data
     dataset = []
     for i in range(len(trajs)):
-        init_state = np.reshape(trajs[i].states[0].to_dense(), [-1])  # TODO: Flatten hack
+        #init_state = np.reshape(trajs[i].states[0].to_dense(), [-1])  # TODO: Flatten hack
+        init_state = trajs[i].states[0].to_dense()
+        init_state = np.transpose(init_state, [1,2,0])
         #init_state = np.zeros_like(init_state)  # zero-out state
         dataset.append(DataPoint(init_state,
                                  avocab.words2indices(acts[i]),
@@ -64,6 +66,22 @@ def load_data():
                        )
 
     return vocab, avocab, dataset, max_sent, max_alen, init_state.shape
+
+
+def project_obs(obs, dim_out):
+    """Convolve initial state """
+    batch_size, w, h, ch = obs.get_shape()
+
+    with tf.variable_scope('conv_obs'):
+        filt1 = tf.get_variable('filt1', (5, 5, ch, 1))
+        conv1 = tf.nn.conv2d(obs, filt1, [1,2,2,1], 'VALID')
+        _, w, h, ch = conv1.get_shape()
+        flat_dim = int(w*h*ch)
+        flattened = tf.reshape(conv1, [-1, flat_dim])
+        Wfull = tf.get_variable('Wfull', (flat_dim, dim_out))
+        bfull = tf.get_variable('bfull', (dim_out))
+        flat_out = tf.matmul(flattened, Wfull)+bfull
+    return flat_out
 
 
 class Cmd2Act(object):
@@ -78,14 +96,13 @@ class Cmd2Act(object):
         self._init_tf()
 
     def _build_model(self):
-        dim_hidden = 5
-        embed_size = 5
+        dim_hidden = 10
+        embed_size = 10
         num_actions = len(self.act_vocab)
         cmd_vocab_size = len(self.cmd_vocab)
         obs_shape = list(self.obs_shape)
         max_act = self.max_act
         max_cmd = self.max_cmd
-
 
         self.obs = obs = tf.placeholder(tf.float32, [None]+obs_shape)
         self.sentence = sentence = tf.placeholder(tf.int32, [None, max_cmd])
@@ -112,10 +129,12 @@ class Cmd2Act(object):
 
 
             # Project obs into dim_hidden (TODO: Use convnet)
-            Wobs = tf.get_variable('Wobs', obs_shape+[dim_hidden])
-            bobs = tf.get_variable('bobs', (dim_hidden,))
-            obs_proj = tf.matmul(obs, Wobs)+bobs
+            obs_proj = project_obs(obs, dim_hidden)
+            #Wobs = tf.get_variable('Wobs', obs_shape+[dim_hidden])
+            #bobs = tf.get_variable('bobs', (dim_hidden,))
+            #obs_proj = tf.matmul(obs, Wobs)+bobs
             assert_shape(obs_proj, (None, dim_hidden))
+            self.obs_proj = obs_proj
 
             # Embed sentence via RNN
             with tf.variable_scope('encoder'):
@@ -131,14 +150,19 @@ class Cmd2Act(object):
             with tf.variable_scope('decoder'):
                 dec_cell = rnn_cell.GRUCell(dim_hidden)
                 action_list = tf.unpack(action_embeddings, axis=1)
-                dec_outputs, dec_state = rnn.rnn(dec_cell, action_list, initial_state=last_state)
+                self.dec_action_embed = action_list
+
+                with tf.variable_scope('decoder') as varscope:
+                    dec_outputs, dec_state = rnn.rnn(dec_cell, action_list, initial_state=last_state, scope=varscope)
+                self.dec_outputs = dec_outputs
+                self.dec_state = dec_state
 
                 # Test-time decoding, one step
-                output, next_state = dec_cell(dec_action_embed, self.dec_state)
+                with tf.variable_scope('decoder', reuse=True):
+                    output, next_state = dec_cell(dec_action_embed, self.dec_state)
+                self.step_act_input = dec_action_embed
                 self.step_rnn_out = output
                 self.step_state = next_state
-
-                # todo:
 
             # Project decoder outputs into actions
             Wact = tf.get_variable('Wact', (dim_hidden, num_actions))
@@ -181,28 +205,45 @@ class Cmd2Act(object):
         cmd_idx = self.cmd_vocab.words2indices(pad(cmd+[EOS], PAD, self.max_cmd))
         cmd_idx = np.expand_dims(cmd_idx, 0)
         feed_dict = {self.obs: init_state, self.sentence: cmd_idx}
-        encoding = self.run(self.encoding, feeds=feed_dict)
-        return encoding[0]
+        encoding, obs_proj = self.run([self.encoding, self.obs_proj], feeds=feed_dict)
+        return encoding[0], obs_proj[0]
 
     def decode_step(self, encoding, input):
         input = self.act_vocab.words2indices([input])[0]
         input = np.expand_dims(input, 0)
         encoding = np.expand_dims(encoding, 0)
         feed_dict = {self.dec_input:input, self.dec_state:encoding}
-        step_action, rnn_output, step_state = self.run([self.step_action_out, self.step_rnn_out, self.step_state], feeds=feed_dict)
+        step_action, step_rnn, step_state, step_act_enc = \
+                self.run([self.step_action_out, self.step_rnn_out, self.step_state, self.step_act_input], feeds=feed_dict)
         argmax_output = np.argmax(step_action)
         output_action = self.act_vocab.indices2words([argmax_output])[0]
-        return output_action, rnn_output, step_state[0]
+        return output_action, step_state[0]
 
     def decode_full(self, encoding):
         next_state = encoding
         out_action = START
         all_acts = []
         for i in range(self.max_act):
-            out_action, rnn_out, next_state = self.decode_step(next_state, out_action)
+            out_action, next_state = self.decode_step(next_state, out_action)
             all_acts.append(out_action)
         return all_acts
 
+    def debug(self, ex):
+        ex = [ex]
+        feeds = self._make_feed(ex)
+        actions, action_labels, enc, dec, dec_act, dec_lstate = \
+            self.run([self.actions, self.action_labels, self.encoding,
+                     self.dec_outputs, self.dec_action_embed,
+                     self.dec_state], feeds= feeds)
+        dec = np.array(dec)[:,0,:]
+        dec_act = np.array(dec_act)[:,0,:]
+
+        print '--DEBUG--'
+        print self.act_vocab.indices2words(range(len(self.act_vocab)))
+        print 'Actions:', actions
+        print 'ActLabl:', action_labels
+        print 'Encodng:', enc
+        print 'DecOutp:', dec
 
     def train_step(self, batch):
         """
@@ -224,7 +265,7 @@ class Cmd2Act(object):
         loss = self.run(self.batch_loss, feeds=feeds)
         return loss
 
-    def train(self, dataset, test_dataset=None, heartbeat=50):
+    def train(self, dataset, test_dataset=None, heartbeat=100):
         sampler = BatchSampler(dataset)
         #batch0 = None
         for i, batch in enumerate(sampler.with_replacement(batch_size=self.batch_size)):
@@ -248,11 +289,12 @@ class Cmd2Act(object):
                     print 'Sentence:', ' '.join(traj.sentence)
                     print 'Pred actions:', self.act_vocab.indices2words(act_max[0])
                     print 'GT actions:', self.act_vocab.indices2words(act_labels[0])
-                    enc = self.encode_input(example.obs, traj.sentence)
+                    enc, obs_proj = self.encode_input(example.obs, traj.sentence)
                     print 'Encoding:', enc
-
+                    #print 'ObsProj:', obs_proj
                     dec = self.decode_full(enc)
-                    print 'Dec:', dec
+                    print 'Test Decode:', dec
+
 
 
 def main():
