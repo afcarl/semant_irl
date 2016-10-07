@@ -12,6 +12,7 @@ import zipfile
 UNK = '_UNK'
 PAD = '_PAD'
 EOS = '_EOS'
+START = '_START'
 
 class BaseVocab(object):
     __metaclass__ = ABCMeta
@@ -45,7 +46,7 @@ class BaseVocab(object):
         return [self.index2word(i) for i in indices]
 
 
-class Vocab(BaseVocab, OrderedDict):
+class Vocab(BaseVocab):
     """A mapping between words and numerical indices. This class is used to facilitate the creation of word embedding matrices.
 
     Example:
@@ -66,6 +67,7 @@ class Vocab(BaseVocab, OrderedDict):
         """
         super(Vocab, self).__init__()
         self._counts = Counter()
+        self._dict = OrderedDict()
         self._unk = unk
 
         # assign an index for UNK
@@ -76,13 +78,19 @@ class Vocab(BaseVocab, OrderedDict):
 
         If the word is unknown, the index for UNK is returned.
         """
-        return self.get(word, 0)
+        return self._dict.get(word, 0)
 
     def __setitem__(self, key, value, **kwargs):
         raise NotImplementedError('Use add method instead.')
 
+    def __contains__(self, item):
+        return item in self._dict
+
+    def __len__(self):
+        return len(self._dict)
+
     def __str__(self):
-        return 'Vocab(%d words)' % len(self)
+        return 'Vocab(%d words)' % len(self._dict)
 
     def __eq__(self, other):
         if isinstance(other, Vocab):
@@ -104,8 +112,8 @@ class Vocab(BaseVocab, OrderedDict):
         WARNING: this function assumes that if the Vocab currently has N words, then
         there is a perfect bijection between these N words and the integers 0 through N-1.
         """
-        if word not in self:
-            super(Vocab, self).__setitem__(word, len(self))
+        if word not in self._dict:
+            self._dict.__setitem__(word, len(self._dict))
         self._counts[word] += count
         return self[word]
 
@@ -161,7 +169,7 @@ class Vocab(BaseVocab, OrderedDict):
         """
         # TODO(kelvinguu): it would be nice to just use `dict.viewkeys`, but unfortunately those are not indexable
 
-        compute_index2word = lambda: self.keys()  # this works because self is an OrderedDict
+        compute_index2word = lambda: self._dict.keys()
 
         # create if it doesn't exist
         try:
@@ -170,7 +178,7 @@ class Vocab(BaseVocab, OrderedDict):
             self._index2word_cache = compute_index2word()
 
         # update if it is out of date
-        if len(self._index2word_cache) != len(self):
+        if len(self._index2word_cache) != len(self._dict):
             self._index2word_cache = compute_index2word()
 
         return self._index2word_cache
@@ -187,7 +195,7 @@ class Vocab(BaseVocab, OrderedDict):
         NOTE: UNK is never pruned.
         """
         keep = lambda w: self.count(w) >= cutoff or w == self._unk
-        return self.subset([w for w in self if keep(w)])
+        return self.subset([w for w in self._dict if keep(w)])
 
     def sort_by_decreasing_count(self):
         """Return a **new** `Vocab` object that is ordered by decreasing count.

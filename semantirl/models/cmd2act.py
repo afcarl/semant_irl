@@ -8,10 +8,10 @@ import numpy as np
 from collections import namedtuple
 
 from semantirl.data import load_turk_train_limited
-from semantirl.utils import Vocab, PAD, EOS, pad, split_train_test, BatchSampler
+from semantirl.utils import Vocab, PAD, EOS, START, pad, split_train_test, BatchSampler, pretty_print_sentence
+from semantirl.utils.tf_utils import get_wt_string, restore_wt_string, dump_pickle_str, load_pickle_str
 
 MAX_LEN = 20
-START = '_START'
 
 DataPoint = namedtuple('DataPoint', ['obs', 'acts', 'sentence', 'traj'])
 
@@ -54,10 +54,7 @@ def load_data():
     # Construct data
     dataset = []
     for i in range(len(trajs)):
-        #init_state = np.reshape(trajs[i].states[0].to_dense(), [-1])  # TODO: Flatten hack
         init_state = trajs[i].states[0].to_dense()
-        init_state = np.transpose(init_state, [1,2,0])
-        #init_state = np.zeros_like(init_state)  # zero-out state
         dataset.append(DataPoint(init_state,
                                  avocab.words2indices(acts[i]),
                                  vocab.words2indices(sents[i]),
@@ -85,10 +82,9 @@ def project_obs(obs, dim_out):
 
 
 class Cmd2Act(object):
-    def __init__(self, cmd_vocab, act_vocab, obs_shape, max_cmd_len=MAX_LEN, max_act_len=MAX_LEN, batch_size=1):
+    def __init__(self, cmd_vocab, act_vocab, obs_shape, max_cmd_len=MAX_LEN, max_act_len=MAX_LEN):
         self.cmd_vocab = cmd_vocab
         self.act_vocab = act_vocab
-        self.batch_size = batch_size
         self.max_cmd = max_cmd_len
         self.max_act = max_act_len
         self.obs_shape = obs_shape
@@ -105,6 +101,8 @@ class Cmd2Act(object):
         max_cmd = self.max_cmd
 
         self.obs = obs = tf.placeholder(tf.float32, [None]+obs_shape)
+        obs = tf.transpose(obs, [0, 2, 3, 1])
+
         self.sentence = sentence = tf.placeholder(tf.int32, [None, max_cmd])
         self.actions = actions = tf.placeholder(tf.int32, [None, max_act])
         self.action_labels = action_labels = actions[:,1:]  # First action is START placeholder
@@ -265,13 +263,10 @@ class Cmd2Act(object):
         loss = self.run(self.batch_loss, feeds=feeds)
         return loss
 
-    def train(self, dataset, test_dataset=None, heartbeat=100):
+    def train(self, dataset, test_dataset=None, max_iter=4000, heartbeat=100, batch_size=5):
         sampler = BatchSampler(dataset)
-        #batch0 = None
-        for i, batch in enumerate(sampler.with_replacement(batch_size=self.batch_size)):
-            #if batch0 is None:
+        for i, batch in enumerate(sampler.with_replacement(batch_size=batch_size)):
             loss = self.train_step(batch)
-            #    batch0 = batch
             if i%heartbeat == 0:
                 print '=='*10, 'Iter:', i
                 print 'Train loss:', loss
@@ -287,14 +282,37 @@ class Cmd2Act(object):
                     results = self.run([self.act_max, self.action_labels], feeds=feeds)
                     act_max, act_labels = results
                     print 'Sentence:', ' '.join(traj.sentence)
-                    print 'Pred actions:', self.act_vocab.indices2words(act_max[0])
-                    print 'GT actions:', self.act_vocab.indices2words(act_labels[0])
+                    #print 'Pred actions:', self.act_vocab.indices2words(act_max[0])
+                    print 'GT actions:', ' '.join(pretty_print_sentence(self.act_vocab.indices2words(act_labels[0])))
                     enc, obs_proj = self.encode_input(example.obs, traj.sentence)
-                    print 'Encoding:', enc
-                    #print 'ObsProj:', obs_proj
+                    #print 'Encoding:', enc
                     dec = self.decode_full(enc)
-                    print 'Test Decode:', dec
+                    print 'Test Decode:', ' '.join(pretty_print_sentence(dec))
+            if i>max_iter:
+                break
 
+    def compute_action_sequence(self, init_state, sentence):
+        enc, _ = self.encode_input(init_state.to_dense(), sentence)
+        dec = self.decode_full(enc)
+        return dec, enc
+
+    #Pickling
+    def __getstate__(self):
+        return {'cmd_vocab': self.cmd_vocab,
+                'act_vocab': self.act_vocab,
+                'max_cmd': self.max_cmd,
+                'max_act': self.max_act,
+                'obs_shape': self.obs_shape,
+                'wts': get_wt_string(self.saver, self.sess)
+        }
+
+    def __setstate__(self, state):
+        self.__init__(state['cmd_vocab'],
+                      state['act_vocab'],
+                      max_cmd_len=state['max_cmd'],
+                      max_act_len=state['max_act'],
+                      obs_shape=state['obs_shape'])
+        restore_wt_string(self.saver, self.sess, state['wts'])
 
 
 def main():
@@ -302,8 +320,12 @@ def main():
     vocab, avocab, dataset, max_slen, max_alen, obs_shape = load_data()
     train, test = split_train_test(dataset, train_perc=0.8, shuffle=True)
 
-    cmd = Cmd2Act(vocab, avocab, obs_shape, batch_size=5, max_cmd_len=max_slen, max_act_len=max_alen)
+    cmd = Cmd2Act(vocab, avocab, obs_shape, max_cmd_len=max_slen, max_act_len=max_alen)
     cmd.train(train, test_dataset=test)
+
+    import pickle
+    with open('cmd2act.model', 'w+b') as f:
+        pickle.dump(cmd, f)
 
 
 if __name__ == "__main__":

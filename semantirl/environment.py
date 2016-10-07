@@ -18,9 +18,29 @@ COLOR_TO_CHANNEL = {col:channel for (channel, col) in enumerate(['red', 'green',
 # Map actions to a discrete set of numbers
 ACTION_TO_INDEX = {act:idx for (idx, act) in enumerate(ACTIONS)}
 
+
 class SokobanEnviron(object):
-    def __init__(self):
-        pass
+    def __init__(self, init_state):
+        self.state = init_state
+
+    def step(self, action):
+        agent = self.state.agent
+        pos = [agent.pos.x, agent.pos.y]
+        directions = {
+            'north': [0, 1],
+            'south': [0, -1],
+            'east': [1, 0],
+            'west': [-1, 0],
+        }
+        if action in directions:
+            offset = np.array(directions[action])
+            pos = offset+pos
+            new_agent = MDPObj(MDPObj.AGENT, {'pos': Position(pos[0], pos[1])})
+            self.state.set_agent(new_agent)
+
+    def render(self):
+        self.state.display()
+
 
 class Trajectory(object):
     """ Contains a list of states and actions """
@@ -46,6 +66,21 @@ class OOState(object):
     def __init__(self, obj_list):
         self.obj_list = obj_list
         self.env_dim = ENV_DIMENSIONS
+
+    @property
+    def agent(self):
+        for obj in self.obj_list:
+            if obj.type == MDPObj.AGENT:
+                return obj
+        return None
+
+    def set_agent(self, new_agent):
+        agent_idx = None
+        for i, obj in enumerate(self.obj_list):
+            if obj.type == MDPObj.AGENT:
+                agent_idx = i
+        self.obj_list[agent_idx] = new_agent
+
 
     def display(self):
         """ Print state to terminal """
