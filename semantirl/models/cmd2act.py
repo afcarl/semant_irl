@@ -55,6 +55,7 @@ def load_data():
     dataset = []
     for i in range(len(trajs)):
         init_state = np.reshape(trajs[i].states[0].to_dense(), [-1])  # TODO: Flatten hack
+        #init_state = np.zeros_like(init_state)  # zero-out state
         dataset.append(DataPoint(init_state,
                                  avocab.words2indices(acts[i]),
                                  vocab.words2indices(sents[i]),
@@ -77,8 +78,8 @@ class Cmd2Act(object):
         self._init_tf()
 
     def _build_model(self):
-        dim_hidden = 10
-        embed_size = 10
+        dim_hidden = 5
+        embed_size = 5
         num_actions = len(self.act_vocab)
         cmd_vocab_size = len(self.cmd_vocab)
         obs_shape = list(self.obs_shape)
@@ -97,7 +98,8 @@ class Cmd2Act(object):
         self.dec_state = tf.placeholder(tf.float32, [None, dim_hidden])
 
         with tf.variable_scope('cmd2seq'):
-            embedding_matrix = tf.get_variable('WEmbed', (cmd_vocab_size, embed_size))
+            embedding_matrix = tf.get_variable('WEmbed', #(cmd_vocab_size, embed_size),
+                                                initializer=(2*np.random.rand(cmd_vocab_size,embed_size)-1.).astype(np.float32))
             word_embeddings = tf.nn.embedding_lookup(embedding_matrix, sentence)
             assert_shape(word_embeddings, (None, max_cmd, embed_size))
 
@@ -108,6 +110,7 @@ class Cmd2Act(object):
             dec_action_embed = tf.nn.embedding_lookup(action_embedding_mat, self.dec_input)
             assert_shape(dec_action_embed, (None, dim_hidden))
 
+
             # Project obs into dim_hidden (TODO: Use convnet)
             Wobs = tf.get_variable('Wobs', obs_shape+[dim_hidden])
             bobs = tf.get_variable('bobs', (dim_hidden,))
@@ -116,7 +119,7 @@ class Cmd2Act(object):
 
             # Embed sentence via RNN
             with tf.variable_scope('encoder'):
-                enc_cell = rnn_cell.BasicRNNCell(dim_hidden)
+                enc_cell = rnn_cell.GRUCell(dim_hidden)
                 # unpack tensors
                 word_list = tf.unpack(word_embeddings, axis=1)
                 enc_outputs, last_state = rnn.rnn(enc_cell, word_list, initial_state=obs_proj)
@@ -126,7 +129,7 @@ class Cmd2Act(object):
 
             # Decode actions via RNN
             with tf.variable_scope('decoder'):
-                dec_cell = rnn_cell.BasicRNNCell(dim_hidden)
+                dec_cell = rnn_cell.GRUCell(dim_hidden)
                 action_list = tf.unpack(action_embeddings, axis=1)
                 dec_outputs, dec_state = rnn.rnn(dec_cell, action_list, initial_state=last_state)
 
@@ -134,6 +137,8 @@ class Cmd2Act(object):
                 output, next_state = dec_cell(dec_action_embed, self.dec_state)
                 self.step_rnn_out = output
                 self.step_state = next_state
+
+                # todo:
 
             # Project decoder outputs into actions
             Wact = tf.get_variable('Wact', (dim_hidden, num_actions))
@@ -144,6 +149,10 @@ class Cmd2Act(object):
             self.act_logits = tf.nn.softmax(act_output)
             self.act_logits = tf.reshape(self.act_logits, [-1, max_act-1, num_actions])
             act_output = tf.reshape(act_output, [-1, max_act-1, num_actions])
+
+            step_action_out = tf.reshape(self.step_rnn_out, [-1, dim_hidden])
+            step_action_out = tf.matmul(step_action_out, Wact)+bact
+            self.step_action_out = tf.nn.softmax(step_action_out)
 
             self.act_max = tf.argmax(self.act_logits, 2)
 
@@ -176,15 +185,24 @@ class Cmd2Act(object):
         return encoding[0]
 
     def decode_step(self, encoding, input):
-        raise NotImplementedError()
         input = self.act_vocab.words2indices([input])[0]
         input = np.expand_dims(input, 0)
         encoding = np.expand_dims(encoding, 0)
         feed_dict = {self.dec_input:input, self.dec_state:encoding}
-        step_output, step_state = self.run([self.step_rnn_out, self.step_state], feeds=feed_dict)
-        argmax_output = np.argmax(step_output)
+        step_action, rnn_output, step_state = self.run([self.step_action_out, self.step_rnn_out, self.step_state], feeds=feed_dict)
+        argmax_output = np.argmax(step_action)
         output_action = self.act_vocab.indices2words([argmax_output])[0]
-        return output_action, step_state[0]
+        return output_action, rnn_output, step_state[0]
+
+    def decode_full(self, encoding):
+        next_state = encoding
+        out_action = START
+        all_acts = []
+        for i in range(self.max_act):
+            out_action, rnn_out, next_state = self.decode_step(next_state, out_action)
+            all_acts.append(out_action)
+        return all_acts
+
 
     def train_step(self, batch):
         """
@@ -206,15 +224,16 @@ class Cmd2Act(object):
         loss = self.run(self.batch_loss, feeds=feeds)
         return loss
 
-    def train(self, dataset, test_dataset=None, heartbeat=50000):
+    def train(self, dataset, test_dataset=None, heartbeat=50):
         sampler = BatchSampler(dataset)
         #batch0 = None
         for i, batch in enumerate(sampler.with_replacement(batch_size=self.batch_size)):
             #if batch0 is None:
+            loss = self.train_step(batch)
             #    batch0 = batch
             if i%heartbeat == 0:
                 print '=='*10, 'Iter:', i
-                print 'Train loss:', self.train_step(batch)
+                print 'Train loss:', loss
                 if test_dataset:
                     print 'Test loss:', self.eval_loss(test_dataset)
 
@@ -232,7 +251,8 @@ class Cmd2Act(object):
                     enc = self.encode_input(example.obs, traj.sentence)
                     print 'Encoding:', enc
 
-
+                    dec = self.decode_full(enc)
+                    print 'Dec:', dec
 
 
 def main():
