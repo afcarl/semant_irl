@@ -189,7 +189,7 @@ class PlaceBlockJump(Subpolicy):
         obs = obswrapper(obs)
         pitch = obs.pitch
         if memory is None:
-            memory = {'t':-1, 'state': 0, 'y': obs.YPos}
+            memory = {'t':-1, 'state': 0, 'y': 227}
         memory['t'] += 1
         t = memory['t']
 

@@ -4,14 +4,17 @@ class GrammarNode(object):
     def __init__(self):
         self.__children = []
 
-    def execute(self, mc):
-        for child in self.children:
-            child.execute(mc)
+    def execute(self, s0, mc):
+        for child in self.__children:
+            s0 = child.execute(s0, mc)
 
     def describe(self):
         if random.random()>0.8 or self.isleaf():
             return random.choice(self._describe())
         return '. '.join([c.describe() for c in self.__children])
+
+    def _describe(self):
+        raise NotImplementedError()
 
     def isleaf(self):
         return len(self.__children) == 0
@@ -26,7 +29,7 @@ class MoveRel(GrammarNode):
         self.x = x
         self.z = z
 
-    def execute(self, mc):
+    def execute(self, s0, mc):
         raise NotImplementedError()
 
     def _describe(self):
@@ -39,7 +42,7 @@ class Place(GrammarNode):
         super(Place, self).__init__()
         self.block_type = block_type
 
-    def execute(self, mc):
+    def execute(self, s0, mc):
         raise NotImplementedError()
 
     def _describe(self):
