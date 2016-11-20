@@ -3,6 +3,7 @@ Most of this code is taken from
 the colorama library
 """
 import sys
+import logging
 
 CSI = '\033['
 OSC = '\033]'
@@ -148,3 +149,26 @@ def cursorl():
 
 def cursorr():
     print Cursor.FORWARD()
+
+
+class ColorLogger(object):
+    def __init__(self, name, color='white'):
+        self.name = name
+        self.logger = logging.getLogger(name)
+        self.color = color
+
+    def info(self, msg, *frmat):
+        msg = color_string(msg % frmat, color=self.color)
+        self.logger.info(msg)
+
+    def debug(self, msg, *frmat):
+        msg = color_string(msg % frmat, color=self.color)
+        self.logger.debug(msg)
+
+    def warning(self, msg, *frmat):
+        msg = color_string(msg % frmat, color='red')
+        self.logger.warning(msg)
+
+    def error(self, msg, *frmat):
+        msg = color_string(msg % frmat, color='red')
+        self.logger.error(msg)

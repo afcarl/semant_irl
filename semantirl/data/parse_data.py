@@ -17,7 +17,6 @@ def parse_file(fname):
                 actions = line.strip().split(',')
             else:
                 states.append(parse_state(line.strip()))
-        #actions = [ACTION_TO_INDEX[a] for a in actions]
     return Trajectory(states, actions, sentence=sentence)
 
 def parse_state(line):
