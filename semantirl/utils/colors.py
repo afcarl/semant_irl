@@ -151,6 +151,10 @@ def cursorr():
     print Cursor.FORWARD()
 
 
+def color_string(msg, color=None):
+    return _COLOR_MAP[color][0] + msg + Fore.RESET
+
+
 class ColorLogger(object):
     def __init__(self, name, color='white'):
         self.name = name

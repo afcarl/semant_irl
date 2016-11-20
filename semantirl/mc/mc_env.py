@@ -47,7 +47,7 @@ base_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="no" ?>
     </ServerHandlers>
   </ServerSection>
 
-  <AgentSection mode="Survival">
+  <AgentSection mode="Creative">
     <Name>Cristina</Name>
     <AgentStart>
     </AgentStart>
@@ -142,8 +142,27 @@ class Platform(Maze):
 
 
 class WorldDef(object):
-    def generate_mission(self):
-        raise NotImplementedError()
+    def __init__(self):
+        self.z_bounds = np.array([-1,1]) * 20
+        self.x_bounds = np.array([-1,1]) * 20
+
+    def base_config(self):
+        my_mission = MalmoPython.MissionSpec(base_xml, False)
+        my_mission.requestVideo(640, 480)
+        my_mission.timeLimitInSeconds(20)
+        # my_mission.allowAllChatCommands()
+        # my_mission.allowAllInventoryCommands()
+        my_mission.setTimeOfDay(6000, True)
+        # my_mission.observeChat()
+        # my_mission.observeGrid(-1, -1, -1, 1, 1, 1, 'grid')
+        # my_mission.observeHotBar()
+
+        return my_mission
+    def generate_mission(self, reset=False):
+        mission = self.base_config()
+        if reset:
+            mission.forceWorldReset()
+        return mission
 
 
 class MazeDef(WorldDef):
@@ -165,19 +184,6 @@ class MazeDef(WorldDef):
         self.goal_reward = GOAL_REWARD
         self.goal_tolerance = 1.1
         self.goal_pos = None
-
-    def base_config(self):
-        my_mission = MalmoPython.MissionSpec(base_xml, False)
-        my_mission.requestVideo(640, 480)
-        my_mission.timeLimitInSeconds(20)
-        # my_mission.allowAllChatCommands()
-        # my_mission.allowAllInventoryCommands()
-        my_mission.setTimeOfDay(6000, True)
-        # my_mission.observeChat()
-        # my_mission.observeGrid(-1, -1, -1, 1, 1, 1, 'grid')
-        # my_mission.observeHotBar()
-
-        return my_mission
 
     def draw_wall(self, mission, x1, x2, z1, z2, height):
         for y in range(self.floor, self.floor + height):
@@ -223,7 +229,7 @@ class MazeDef(WorldDef):
 
 
 class Minecraft(object):
-    def __init__(self, world_def, video_dim=(32, 32), num_parallel=1, time_limit=20,
+    def __init__(self, world_def, video_dim=(32, 32), num_parallel=1, time_limit=20, reset=True,
                  discrete_actions=False, vision_observation=False, depth=False, num_frames=1, grayscale=True):
         self.video_width, self.video_height = video_dim
         self.image_width, self.image_height = video_dim
@@ -233,14 +239,14 @@ class Minecraft(object):
         self.num_parallel = num_parallel
 
         self.world_def = world_def
-        self.mission = self.world_def.generate_mission()
-        self.XGoalPos, self.YGoalPos = self.world_def.goal_pos[0], self.world_def.goal_pos[2]
+        self.mission = self.world_def.generate_mission(reset=reset)
+        #self.XGoalPos, self.YGoalPos = self.world_def.goal_pos[0], self.world_def.goal_pos[2]
 
 
         self.mission.requestVideo(self.video_height, self.video_width)
         self.mission.observeRecentCommands()
         self.mission.allowAllContinuousMovementCommands()
-        # self.mission.timeLimitInSeconds(time_limit)
+        self.mission.timeLimitInSeconds(time_limit)
 
         if self.num_parallel > 1:
             self.client_pool = MalmoPython.ClientPool()
@@ -258,12 +264,15 @@ class Minecraft(object):
         self.mission_record_spec = MalmoPython.MissionRecordSpec()
 
         if discrete_actions:
-            self._action_set = {0: "move 1", 1: "turn 1", 2: "turn -1"}
+            self._action_set = {0: "move 1", 1: "turn 0.5", 2: "turn -0.5", 3: None}
             self.action_space = Discrete(n=len(self._action_set))
         else:
             self._action_set = [("move", (-1, 1)),
-                               ("turn", (-1, 1))]
-                                #("jump", (-1, 1))]
+                               ("turn", (-1, 1)),
+                                ("pitch", (-1, 1)),
+                                ("use", (0, 1)),
+                                ("jump", (0, 1)),
+                                ]
             # self._action_set = [("move", (0, 1)),
             #                     ("move", (-1, 0)),
             #                     ("turn", (0, 1)),
@@ -294,10 +303,12 @@ class Minecraft(object):
         else:
 
             self.obs_keys = [(u'XPos', x_bounds),
+                             (u'YPos', (200,300)),
                              (u'ZPos', z_bounds),
                              (u'yaw', (0, 360)),
-                             (u'XGoalPos', x_bounds),
-                             (u'YGoalPos', z_bounds),
+                             (u'pitch', (0, 180)),
+                             #(u'XGoalPos', x_bounds),
+                             #(u'YGoalPos', z_bounds),
                              (u'DistanceTravelled', (0, 30)),
                              (u'distanceFromGoal', (0, self.max_dist))]
             l_bounds = [key[1][0] for key in self.obs_keys]
@@ -329,6 +340,8 @@ class Minecraft(object):
         for index, key in enumerate(self.obs_keys):
             if key[0] == 'yaw':
                 obs = getattr(frame, 'yaw') % 360  # Yaw is cumulative so need to take mod
+            elif key[0] == 'pitch':
+                obs = 180 - (getattr(frame, 'pitch') + 90)
             elif key[0] == u'DistanceTravelled':
                 obs = msg.get(key[0]) - self.lastDistanceTravelled
                 self.distance_travelled = obs
@@ -338,8 +351,9 @@ class Minecraft(object):
             else:
                 obs = msg.get(key[0])
             if obs is None:
-                LOGGER.debug("Obs was None", key[0])
-            state.append(float(obs))
+                LOGGER.debug("Obs was None %s", key[0])
+            else:
+                state.append(float(obs))
         return state
 
     def _get_obs(self, world_state):
@@ -364,14 +378,22 @@ class Minecraft(object):
     def _perform_action(self, action):
         if self.discrete_actions:
             action = self._action_set[action]
-            self._send_command(action)
+            if action:
+                self._send_command(action)
         else:
             for action_name, val in zip(self._action_set, action.tolist()):
                 action_name = action_name[0]
                 if action_name == 'jump':
-                    if val >= 0:
+                    if val > 0:
                         self.jump = 1
                         self._send_command('jump 1')
+                    else:
+                        self.jump = 0
+                        self._send_command('jump 0')
+                elif action_name == 'use':
+                    self._send_command('use %d' % int(val))
+                elif action_name == 'attack':
+                    self._send_command('attack %d' % int(val))
                 else:
                     self._send_command('%s %f' % (action_name, val))
 
@@ -454,7 +476,7 @@ class Minecraft(object):
 
         # Perform action and wait
         self._perform_action(action)
-        self._reset_jump()
+        #self._reset_jump()
         time.sleep(.02)
 
         # Wait for a new frame and observation
